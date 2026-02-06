@@ -26,12 +26,14 @@ cargo fmt --all --check
 cargo build --workspace
 cargo test -p rainbowkv -p lattice-input
 go test ./cmd/lattice-orchestrator -count=1
+./scripts/trace-smoke.sh
 ```
 
 Expected:
 
 - all commands succeed
 - no compile warnings from `flashaudit` dead-code fields
+- trace propagation + failover integration tests pass
 
 ## 3) Performance checks (RainbowKV)
 
@@ -46,6 +48,7 @@ Expected:
   - `rainbowkv_lookup/lookup_ntlm_into/hit`
   - `rainbowkv_lookup/lookup_ntlm_into/miss`
   - `rainbowkv_reduction/reduce_hashes_batch_8k`
+- compare against `docs/performance-baseline.md`
 
 ## 4) Smoke end-to-end
 
@@ -124,3 +127,22 @@ Expected:
 
 - Grafana and Prometheus reachable
 - dashboard `Lattice - Orchestrator and Worker Overview` shows worker series during smoke/chaos runs
+
+## 9) Kubernetes packaging sanity (optional)
+
+Render Helm templates:
+
+```bash
+helm template lattice deployments/helm/lattice -n lattice > /tmp/lattice-helm.yaml
+```
+
+Check raw manifests with kustomize:
+
+```bash
+kubectl kustomize deployments/k8s > /tmp/lattice-k8s.yaml
+```
+
+Expected:
+
+- both renders succeed
+- mTLS secret assumptions match `deployments/k8s/README.md`

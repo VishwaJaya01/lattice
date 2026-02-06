@@ -31,4 +31,16 @@ Use WSL2 for fuzz runs:
 
 Control iterations via `FUZZ_RUNS=1000000`.
 
-Artifacts are written under `fuzz/artifacts/` by default.
+## Seeds and corpus handling
+
+`scripts/fuzz-ci.sh` automatically:
+
+- merges `fuzz/seeds/<target>/` into `fuzz/corpus/<target>/`
+- runs each target against the merged corpus
+- writes crashes/reproducers into `fuzz/artifacts/<target>/`
+
+Sanitizer can be overridden:
+
+```bash
+FUZZ_SANITIZER=address FUZZ_RUNS=200000 ./scripts/fuzz-ci.sh
+```

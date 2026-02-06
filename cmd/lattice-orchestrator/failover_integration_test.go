@@ -16,14 +16,18 @@ import (
 
 type mockWorkerServer struct {
 	latticev1.UnimplementedLatticeAuditServer
-	nodeID   string
-	received chan string
+	nodeID          string
+	received        chan string
+	receivedTrace   chan string
+	receivedBaggage chan string
 }
 
 func newMockWorkerServer(nodeID string) *mockWorkerServer {
 	return &mockWorkerServer{
-		nodeID:   nodeID,
-		received: make(chan string, 32),
+		nodeID:          nodeID,
+		received:        make(chan string, 32),
+		receivedTrace:   make(chan string, 32),
+		receivedBaggage: make(chan string, 32),
 	}
 }
 
@@ -43,7 +47,17 @@ func (m *mockWorkerServer) AuditStream(stream latticev1.LatticeAudit_AuditStream
 			case m.received <- payload.HashBatch.BatchId:
 			default:
 			}
+			select {
+			case m.receivedTrace <- req.Traceparent:
+			default:
+			}
+			select {
+			case m.receivedBaggage <- req.Baggage:
+			default:
+			}
 			if err := stream.Send(&latticev1.AuditResponse{
+				Traceparent: req.Traceparent,
+				Baggage:     req.Baggage,
 				Payload: &latticev1.AuditResponse_Status{
 					Status: &latticev1.Status{
 						NodeId:          m.nodeID,
@@ -56,6 +70,8 @@ func (m *mockWorkerServer) AuditStream(stream latticev1.LatticeAudit_AuditStream
 			}
 		case *latticev1.AuditRequest_Control:
 			if err := stream.Send(&latticev1.AuditResponse{
+				Traceparent: req.Traceparent,
+				Baggage:     req.Baggage,
 				Payload: &latticev1.AuditResponse_Status{
 					Status: &latticev1.Status{
 						NodeId:          m.nodeID,
@@ -168,7 +184,20 @@ func waitForRouteWorker(t *testing.T, state *serverState, batchID, workerID stri
 
 func sendHashBatch(t *testing.T, stream latticev1.LatticeAudit_AuditStreamClient, batchID string) {
 	t.Helper()
+	sendHashBatchWithTrace(t, stream, batchID, "", "")
+}
+
+func sendHashBatchWithTrace(
+	t *testing.T,
+	stream latticev1.LatticeAudit_AuditStreamClient,
+	batchID string,
+	traceparent string,
+	baggage string,
+) {
+	t.Helper()
 	err := stream.Send(&latticev1.AuditRequest{
+		Traceparent: traceparent,
+		Baggage:     baggage,
 		Payload: &latticev1.AuditRequest_HashBatch{
 			HashBatch: &latticev1.HashBatch{
 				BatchId:    batchID,
@@ -179,6 +208,18 @@ func sendHashBatch(t *testing.T, stream latticev1.LatticeAudit_AuditStreamClient
 	})
 	if err != nil {
 		t.Fatalf("send batch %s: %v", batchID, err)
+	}
+}
+
+func waitForBatchReceived(t *testing.T, ch <-chan string, want string, timeout time.Duration, source string) {
+	t.Helper()
+	select {
+	case got := <-ch:
+		if got != want {
+			t.Fatalf("%s got batch %q, want %q", source, got, want)
+		}
+	case <-time.After(timeout):
+		t.Fatalf("%s did not receive batch", source)
 	}
 }
 
@@ -232,15 +273,7 @@ func TestAuditStreamReassignsAfterWorkerFailure(t *testing.T) {
 
 	batchID := findBatchIDForWorker(t, state, wcA.id)
 	sendHashBatch(t, stream, batchID)
-
-	select {
-	case got := <-workerA.received:
-		if got != batchID {
-			t.Fatalf("worker A got batch %q, want %q", got, batchID)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("worker A did not receive initial batch")
-	}
+	waitForBatchReceived(t, workerA.received, batchID, 5*time.Second, "worker A")
 
 	// Kill worker A while client stream remains open.
 	stopA()
@@ -248,13 +281,91 @@ func TestAuditStreamReassignsAfterWorkerFailure(t *testing.T) {
 	waitForRouteWorker(t, state, batchID, wcB.id, 5*time.Second)
 
 	sendHashBatch(t, stream, batchID)
+	waitForBatchReceived(t, workerB.received, batchID, 5*time.Second, "worker B")
+}
+
+func TestAuditStreamPropagatesTraceContext(t *testing.T) {
+	state := newServerState("orchestrator-test", 64)
+
+	addr, worker, _ := startMockWorker(t, "worker-trace")
+	wc := connectWorkerForTest(t, state, "worker-trace", addr)
+	t.Cleanup(func() {
+		state.removeWorker(wc.id)
+	})
+
+	orchLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen orchestrator: %v", err)
+	}
+	orchServer := grpc.NewServer()
+	latticev1.RegisterLatticeAuditServer(orchServer, &auditServer{state: state})
+	go func() {
+		_ = orchServer.Serve(orchLis)
+	}()
+	t.Cleanup(func() {
+		orchServer.Stop()
+		_ = orchLis.Close()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	clientConn, err := grpc.DialContext(
+		ctx,
+		orchLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(),
+	)
+	if err != nil {
+		t.Fatalf("dial orchestrator: %v", err)
+	}
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	client := latticev1.NewLatticeAuditClient(clientConn)
+	stream, err := client.AuditStream(ctx)
+	if err != nil {
+		t.Fatalf("open client stream: %v", err)
+	}
+	t.Cleanup(func() { _ = stream.CloseSend() })
+
+	batchID := findBatchIDForWorker(t, state, wc.id)
+	traceparent := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	baggage := "engagement=lattice,operator=jayasankha"
+
+	sendHashBatchWithTrace(t, stream, batchID, traceparent, baggage)
+	waitForBatchReceived(t, worker.received, batchID, 5*time.Second, "worker")
 
 	select {
-	case got := <-workerB.received:
-		if got != batchID {
-			t.Fatalf("worker B got batch %q, want %q", got, batchID)
+	case got := <-worker.receivedTrace:
+		if got != traceparent {
+			t.Fatalf("worker got traceparent %q, want %q", got, traceparent)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatalf("worker B did not receive reassigned batch")
+		t.Fatalf("worker did not receive traceparent")
+	}
+
+	select {
+	case got := <-worker.receivedBaggage:
+		if got != baggage {
+			t.Fatalf("worker got baggage %q, want %q", got, baggage)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("worker did not receive baggage")
+	}
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("did not receive response with propagated trace context")
+		default:
+			resp, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("recv response: %v", err)
+			}
+			if resp.Traceparent == traceparent && resp.Baggage == baggage {
+				return
+			}
+		}
 	}
 }

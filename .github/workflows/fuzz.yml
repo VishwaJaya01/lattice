@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   fuzz:
@@ -28,4 +29,14 @@ jobs:
       - name: Run fuzz smoke
         env:
           FUZZ_RUNS: "1000000"
+          FUZZ_SANITIZER: none
         run: ./scripts/fuzz-ci.sh
+
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: |
+            fuzz/artifacts/**
+            fuzz/corpus/**

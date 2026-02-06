@@ -164,6 +164,23 @@ RainbowKV currently includes:
   (`scripts/chaos-demo.sh`).
 - Orchestrator reassignment integration test passes:
   `TestAuditStreamReassignsAfterWorkerFailure`.
+- Trace context propagation integration test passes:
+  `TestAuditStreamPropagatesTraceContext` (`scripts/trace-smoke.sh`).
+
+## Kubernetes Packaging
+
+Deployment assets are available in two forms:
+
+- Raw manifests + kustomize: `deployments/k8s/`
+- Helm chart: `deployments/helm/lattice/`
+
+Default topology:
+
+- `Deployment` for orchestrator
+- `StatefulSet` for workers
+- headless worker service for deterministic pod DNS routing
+- mTLS certs via Kubernetes secret
+- worker demo table generated at startup into `emptyDir`
 
 ## Current Constraints
 
@@ -173,8 +190,6 @@ RainbowKV currently includes:
 
 ## Next Architecture Milestones
 
-- Add deployment topology doc for Kubernetes primitives (Service, StatefulSet,
-  cert distribution, readiness).
 - Document SLO thresholds and capacity model (target hashes/sec per worker).
 - Extend the TLA+ model with liveness/fairness assumptions and tighter mapping
   to queue and retry semantics.

@@ -125,6 +125,56 @@ Stop stack:
 ./scripts/observability-down.sh
 ```
 
+## Kubernetes Deployment
+
+Two deployment tracks are included:
+
+- Raw manifests (kustomize): `deployments/k8s/`
+- Helm chart: `deployments/helm/lattice/`
+
+Container build recipes:
+
+- `deployments/docker/Dockerfile.orchestrator`
+- `deployments/docker/Dockerfile.worker`
+
+Quick raw-manifest apply:
+
+```bash
+kubectl apply -k deployments/k8s
+```
+
+Quick Helm install:
+
+```bash
+helm upgrade --install lattice deployments/helm/lattice -n lattice --create-namespace
+```
+
+Both expect an mTLS secret (`lattice-mtls`) unless Helm-managed cert material is enabled in values.
+
+## Trace Validation
+
+Run the trace and failover integration checks:
+
+```bash
+./scripts/trace-smoke.sh
+```
+
+Reference:
+
+- `docs/trace-validation.md`
+
+## Performance Baseline
+
+Run benchmark and archive output:
+
+```bash
+./scripts/perf-rainbowkv.sh
+```
+
+Reference:
+
+- `docs/performance-baseline.md`
+
 ## Current Status
 
 - gRPC + FlatBuffers contracts in place
@@ -139,6 +189,9 @@ Stop stack:
 - Fuzz harness in place with WSL delegation for Windows Git Bash (`scripts/fuzz-ci.sh`)
 - Stretch goal implemented: TLA+ sharding/recovery model (`tla/LatticeShardRecovery.tla`)
 - End-to-end validation checklist: `docs/demo-checklist.md`
+- Kubernetes packaging available (raw manifests + Helm chart)
+- Trace propagation integration test implemented (`TestAuditStreamPropagatesTraceContext`)
+- RainbowKV performance baseline captured (`docs/performance-baseline.md`)
 
 ## Fuzzing (1M Runs)
 
@@ -163,4 +216,7 @@ GitHub Actions workflow `ci` runs:
 
 - Rust/Go build and targeted tests
 - smoke end-to-end script
+- Kubernetes manifest render checks (Helm + kustomize)
 - TLA+ model check (`tla/LatticeShardRecovery.ci.cfg`)
+
+Workflow `fuzz-smoke` runs fuzz targets and uploads crash/corpus artifacts.

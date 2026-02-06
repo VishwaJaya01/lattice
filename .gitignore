@@ -38,6 +38,9 @@ MC.out*
 *.swo
 *.bak
 *.orig
+docs/perf-runs/*.txt
+__pycache__/
+*.pyc
 
 # Local env and certificates
 .env

@@ -2,9 +2,13 @@
 set -euo pipefail
 
 RUNS="${FUZZ_RUNS:-1000000}"
+SANITIZER="${FUZZ_SANITIZER:-none}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FUZZ_DIR="$REPO_ROOT/fuzz"
+ARTIFACTS_DIR="$FUZZ_DIR/artifacts"
+CORPUS_DIR="$FUZZ_DIR/corpus"
+SEEDS_DIR="$FUZZ_DIR/seeds"
 
 # cargo-fuzz + libFuzzer instrumentation is not reliable under native
 # Windows/MSVC toolchains. If we are in Git Bash, prefer delegating to WSL.
@@ -19,7 +23,7 @@ if [[ "$uname_s" == MINGW* || "$uname_s" == MSYS* || "$uname_s" == CYGWIN* ]]; t
     wsl_root="/mnt/$drive$rest"
 
     echo "Detected Git Bash on Windows. Running fuzz in WSL for compatibility..."
-    exec wsl.exe -u root -e bash -lc "export HOME=/root; if [ -f \"\$HOME/.cargo/env\" ]; then . \"\$HOME/.cargo/env\"; fi; cd '$wsl_root' && FUZZ_RUNS='$RUNS' ./scripts/fuzz-ci.sh"
+    exec wsl.exe -u root -e bash -lc "export HOME=/root; if [ -f \"\$HOME/.cargo/env\" ]; then . \"\$HOME/.cargo/env\"; fi; cd '$wsl_root' && FUZZ_RUNS='$RUNS' FUZZ_SANITIZER='$SANITIZER' ./scripts/fuzz-ci.sh"
   fi
 
   echo "Detected Git Bash on Windows without WSL available."
@@ -41,9 +45,26 @@ if ! cargo fuzz --help >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Running fuzz targets with $RUNS iterations each."
+echo "Running fuzz targets with $RUNS iterations each (sanitizer=$SANITIZER)."
+
+run_target() {
+  local target="$1"
+  local corpus="$CORPUS_DIR/$target"
+  local seeds="$SEEDS_DIR/$target"
+  local artifacts="$ARTIFACTS_DIR/$target"
+
+  mkdir -p "$corpus" "$artifacts"
+
+  if [[ -d "$seeds" ]] && [[ -n "$(find "$seeds" -type f -print -quit)" ]]; then
+    echo "Merging seeds into corpus for target: $target"
+    cargo fuzz run -O -s "$SANITIZER" "$target" "$corpus" "$seeds" -- -merge=1 >/dev/null
+  fi
+
+  echo "Fuzzing target: $target"
+  cargo fuzz run -O -s "$SANITIZER" "$target" "$corpus" -- -runs="$RUNS" -artifact_prefix="$artifacts/"
+}
 
 pushd "$FUZZ_DIR" > /dev/null
-cargo fuzz run -O -s none hash_parser -- -runs="$RUNS"
-cargo fuzz run -O -s none flatbuf_payloads -- -runs="$RUNS"
+run_target hash_parser
+run_target flatbuf_payloads
 popd > /dev/null

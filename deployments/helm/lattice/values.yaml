@@ -1,0 +1,57 @@
+nameOverride: ""
+fullnameOverride: ""
+
+images:
+  orchestrator:
+    repository: ghcr.io/vishwajaya01/lattice-orchestrator
+    tag: latest
+    pullPolicy: IfNotPresent
+  worker:
+    repository: ghcr.io/vishwajaya01/lattice-worker
+    tag: latest
+    pullPolicy: IfNotPresent
+
+mtls:
+  create: false
+  existingSecret: lattice-mtls
+  caCrt: ""
+  orchestratorCrt: ""
+  orchestratorKey: ""
+  workerCrt: ""
+  workerKey: ""
+
+orchestrator:
+  replicaCount: 1
+  nodeId: orchestrator-1
+  grpcPort: 50051
+  metricsPort: 2112
+  workerHeartbeat: 2s
+  workerTimeout: 6s
+  hashReplicas: 128
+  otelEndpoint: ""
+  otelInsecure: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+worker:
+  replicaCount: 2
+  grpcPort: 50052
+  metricsPort: 2113
+  tablePath: /var/lib/lattice/demo.lattice
+  table:
+    chainLen: 100
+    chainCount: 5000
+  otelEndpoint: ""
+  otelInsecure: false
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 2000m
+      memory: 1Gi

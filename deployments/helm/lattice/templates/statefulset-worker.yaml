@@ -1,0 +1,120 @@
+{{- $fullname := include "lattice.fullname" . -}}
+{{- $workerName := printf "%s-worker" $fullname -}}
+{{- $mtlsSecret := ternary (printf "%s-mtls" $fullname) .Values.mtls.existingSecret .Values.mtls.create -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $workerName }}
+  labels:
+    {{- include "lattice.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  serviceName: {{ $workerName }}
+  replicas: {{ .Values.worker.replicaCount }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "lattice.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "lattice.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: generate-demo-table
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - /scripts/generate-demo-table.py
+            - --output
+            - {{ .Values.worker.tablePath }}
+            - --chain-len
+            - {{ .Values.worker.table.chainLen | quote }}
+            - --chain-count
+            - {{ .Values.worker.table.chainCount | quote }}
+          volumeMounts:
+            - name: generator
+              mountPath: /scripts
+              readOnly: true
+            - name: table
+              mountPath: /var/lib/lattice
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+      containers:
+        - name: worker
+          image: "{{ .Values.images.worker.repository }}:{{ .Values.images.worker.tag }}"
+          imagePullPolicy: {{ .Values.images.worker.pullPolicy }}
+          args:
+            - --addr=0.0.0.0:{{ .Values.worker.grpcPort }}
+            - --node-id=$(POD_NAME)
+            - --table={{ .Values.worker.tablePath }}
+            - --metrics-addr=:{{ .Values.worker.metricsPort }}
+            - --tls-cert=/certs/worker.crt
+            - --tls-key=/certs/worker.key
+            - --tls-client-ca=/certs/ca.crt
+            {{- if .Values.worker.otelEndpoint }}
+            - --otel-endpoint={{ .Values.worker.otelEndpoint }}
+            {{- end }}
+            {{- if .Values.worker.otelInsecure }}
+            - --otel-insecure
+            {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.worker.grpcPort }}
+            - name: metrics
+              containerPort: {{ .Values.worker.metricsPort }}
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          volumeMounts:
+            - name: mtls
+              mountPath: /certs
+              readOnly: true
+            - name: table
+              mountPath: /var/lib/lattice
+            - name: tmp
+              mountPath: /tmp
+          resources:
+{{ toYaml .Values.worker.resources | indent 12 }}
+      volumes:
+        - name: mtls
+          secret:
+            secretName: {{ $mtlsSecret }}
+        - name: generator
+          configMap:
+            name: {{ $fullname }}-table-generator
+        - name: table
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
