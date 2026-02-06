@@ -87,6 +87,10 @@ var (
 	errWorkerBackpressure = errors.New("worker backpressure")
 )
 
+const workerReconnectDelay = time.Second
+
+type workerConnDialer func(ctx context.Context, addr string) (*grpc.ClientConn, error)
+
 func main() {
 	var cfg config
 	flag.StringVar(&cfg.addr, "addr", ":50051", "listen address")
@@ -228,50 +232,15 @@ func newServerState(nodeID string, replicas int) *serverState {
 }
 
 func connectWorkers(state *serverState, addrs []string, tlsConfig *tls.Config, heartbeat time.Duration) {
-	for _, addr := range addrs {
-		addr := addr
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		conn, err := grpc.DialContext(ctx, addr, grpcClientOptions(credentials.NewTLS(tlsConfig))...)
-		cancel()
-		if err != nil {
-			slog.Error("worker dial failed", "addr", addr, "err", err)
-			metricWorkerErrors.WithLabelValues("dial").Inc()
-			continue
-		}
-
-		client := latticev1.NewLatticeAuditClient(conn)
-		stream, err := client.AuditStream(context.Background())
-		if err != nil {
-			slog.Error("worker stream failed", "addr", addr, "err", err)
-			metricWorkerErrors.WithLabelValues("stream").Inc()
-			_ = conn.Close()
-			continue
-		}
-
-		workerID := fmt.Sprintf("worker-%d", state.workerCounter.Add(1))
-		now := time.Now().Unix()
-		worker := &workerConn{
-			id:     workerID,
-			addr:   addr,
-			conn:   conn,
-			stream: stream,
-			sendCh: make(chan *latticev1.AuditRequest, 64),
-			done:   make(chan struct{}),
-		}
-		worker.alive.Store(true)
-		worker.lastSeen.Store(now)
-		state.addWorker(worker)
-
-		go workerSendLoop(state, worker)
-		go workerRecvLoop(state, worker)
-		if heartbeat > 0 {
-			go workerHeartbeatLoop(state, worker, heartbeat)
-		}
+	dialer := grpcWorkerDialer(grpcClientOptions(credentials.NewTLS(tlsConfig))...)
+	for i, addr := range addrs {
+		workerID := fmt.Sprintf("worker-%d", i+1)
+		go runWorkerConnector(context.Background(), state, workerID, addr, heartbeat, dialer)
 	}
 }
 
 func workerSendLoop(state *serverState, worker *workerConn) {
-	defer state.removeWorker(worker.id)
+	defer state.removeWorkerConn(worker)
 	for {
 		select {
 		case <-worker.done:
@@ -290,7 +259,7 @@ func workerSendLoop(state *serverState, worker *workerConn) {
 }
 
 func workerRecvLoop(state *serverState, worker *workerConn) {
-	defer state.removeWorker(worker.id)
+	defer state.removeWorkerConn(worker)
 	for {
 		resp, err := worker.stream.Recv()
 		if err == io.EOF {
@@ -348,7 +317,7 @@ func workerHealthLoop(state *serverState, timeout time.Duration) {
 				"timeout", timeout,
 			)
 			metricWorkerErrors.WithLabelValues("heartbeat_timeout").Inc()
-			state.removeWorker(worker.id)
+			state.removeWorkerConn(worker)
 		}
 	}
 }
@@ -382,6 +351,33 @@ func (s *serverState) removeWorker(workerID string) {
 			slog.Warn("worker removed", "worker", workerID)
 			return
 		}
+	}
+}
+
+func (s *serverState) removeWorkerConn(worker *workerConn) {
+	if worker == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, w := range s.workers {
+		if w != worker {
+			continue
+		}
+		w.alive.Store(false)
+		select {
+		case <-w.done:
+		default:
+			close(w.done)
+		}
+		if w.conn != nil {
+			_ = w.conn.Close()
+		}
+		s.workers = append(s.workers[:i], s.workers[i+1:]...)
+		s.ring.rebuild(s.workers)
+		metricWorkers.Set(float64(len(s.workers)))
+		slog.Warn("worker removed", "worker", w.id, "addr", w.addr)
+		return
 	}
 }
 
@@ -548,7 +544,7 @@ func (s *auditServer) enqueueWithFailover(routeKey string, req *latticev1.AuditR
 			lastErr = err
 			failedAttempts++
 			if errors.Is(err, errWorkerNotAlive) {
-				s.state.removeWorker(worker.id)
+				s.state.removeWorkerConn(worker)
 			}
 			continue
 		}
@@ -564,6 +560,102 @@ func (s *auditServer) enqueueWithFailover(routeKey string, req *latticev1.AuditR
 		return errNoWorkers
 	}
 	return lastErr
+}
+
+func grpcWorkerDialer(opts ...grpc.DialOption) workerConnDialer {
+	baseOpts := append([]grpc.DialOption{}, opts...)
+	return func(ctx context.Context, addr string) (*grpc.ClientConn, error) {
+		dialOpts := append([]grpc.DialOption{grpc.WithBlock()}, baseOpts...)
+		conn, err := grpc.DialContext(ctx, addr, dialOpts...)
+		if err != nil {
+			return nil, err
+		}
+		return conn, nil
+	}
+}
+
+func runWorkerConnector(
+	ctx context.Context,
+	state *serverState,
+	workerID string,
+	addr string,
+	heartbeat time.Duration,
+	dialer workerConnDialer,
+) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		conn, err := dialer(dialCtx, addr)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Error("worker dial failed", "worker", workerID, "addr", addr, "err", err)
+			metricWorkerErrors.WithLabelValues("dial").Inc()
+			if !sleepWithContext(ctx, workerReconnectDelay) {
+				return
+			}
+			continue
+		}
+		client := latticev1.NewLatticeAuditClient(conn)
+		stream, err := client.AuditStream(ctx)
+		if err != nil {
+			slog.Error("worker stream failed", "worker", workerID, "addr", addr, "err", err)
+			metricWorkerErrors.WithLabelValues("stream").Inc()
+			_ = conn.Close()
+			if !sleepWithContext(ctx, workerReconnectDelay) {
+				return
+			}
+			continue
+		}
+
+		now := time.Now().Unix()
+		worker := &workerConn{
+			id:     workerID,
+			addr:   addr,
+			conn:   conn,
+			stream: stream,
+			sendCh: make(chan *latticev1.AuditRequest, 64),
+			done:   make(chan struct{}),
+		}
+		worker.alive.Store(true)
+		worker.lastSeen.Store(now)
+		state.addWorker(worker)
+
+		go workerSendLoop(state, worker)
+		go workerRecvLoop(state, worker)
+		if heartbeat > 0 {
+			go workerHeartbeatLoop(state, worker, heartbeat)
+		}
+
+		select {
+		case <-ctx.Done():
+			state.removeWorkerConn(worker)
+			return
+		case <-worker.done:
+		}
+
+		if !sleepWithContext(ctx, workerReconnectDelay) {
+			return
+		}
+	}
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func routeErrorStatus(err error) (int32, string) {

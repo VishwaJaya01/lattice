@@ -94,6 +94,25 @@ func startMockWorker(t *testing.T, nodeID string) (addr string, worker *mockWork
 		t.Fatalf("listen mock worker: %v", err)
 	}
 
+	worker, stop = serveMockWorker(t, nodeID, lis)
+	return lis.Addr().String(), worker, stop
+}
+
+func startMockWorkerAtAddr(t *testing.T, nodeID, addr string) (*mockWorkerServer, func()) {
+	t.Helper()
+
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("listen mock worker: %v", err)
+	}
+
+	worker, stop := serveMockWorker(t, nodeID, lis)
+	return worker, stop
+}
+
+func serveMockWorker(t *testing.T, nodeID string, lis net.Listener) (worker *mockWorkerServer, stop func()) {
+	t.Helper()
+
 	grpcServer := grpc.NewServer()
 	worker = newMockWorkerServer(nodeID)
 	latticev1.RegisterLatticeAuditServer(grpcServer, worker)
@@ -111,7 +130,7 @@ func startMockWorker(t *testing.T, nodeID string) (addr string, worker *mockWork
 	}
 	t.Cleanup(stop)
 
-	return lis.Addr().String(), worker, stop
+	return worker, stop
 }
 
 func connectWorkerForTest(t *testing.T, state *serverState, workerID, addr string) *workerConn {
@@ -180,6 +199,18 @@ func waitForRouteWorker(t *testing.T, state *serverState, batchID, workerID stri
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for route %q to worker %s", batchID, workerID)
+}
+
+func waitForWorkerCount(t *testing.T, state *serverState, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if state.workerCount() == want {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for worker count=%d, got %d", want, state.workerCount())
 }
 
 func sendHashBatch(t *testing.T, stream latticev1.LatticeAudit_AuditStreamClient, batchID string) {
@@ -368,4 +399,73 @@ func TestAuditStreamPropagatesTraceContext(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestWorkerConnectorReconnectsAfterRestart(t *testing.T) {
+	state := newServerState("orchestrator-test", 64)
+
+	reserve, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve addr: %v", err)
+	}
+	addr := reserve.Addr().String()
+	_ = reserve.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	dialer := grpcWorkerDialer(grpc.WithTransportCredentials(insecure.NewCredentials()))
+	go runWorkerConnector(ctx, state, "worker-1", addr, 0, dialer)
+
+	workerA, stopA := startMockWorkerAtAddr(t, "worker-a", addr)
+	waitForWorkerCount(t, state, 1, 5*time.Second)
+	batchID := findBatchIDForWorker(t, state, "worker-1")
+
+	orchLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen orchestrator: %v", err)
+	}
+	orchServer := grpc.NewServer()
+	latticev1.RegisterLatticeAuditServer(orchServer, &auditServer{state: state})
+	go func() {
+		_ = orchServer.Serve(orchLis)
+	}()
+	t.Cleanup(func() {
+		orchServer.Stop()
+		_ = orchLis.Close()
+	})
+
+	clientCtx, clientCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer clientCancel()
+
+	clientConn, err := grpc.DialContext(
+		clientCtx,
+		orchLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(),
+	)
+	if err != nil {
+		t.Fatalf("dial orchestrator: %v", err)
+	}
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	client := latticev1.NewLatticeAuditClient(clientConn)
+	stream, err := client.AuditStream(clientCtx)
+	if err != nil {
+		t.Fatalf("open client stream: %v", err)
+	}
+	t.Cleanup(func() { _ = stream.CloseSend() })
+
+	sendHashBatch(t, stream, batchID)
+	waitForBatchReceived(t, workerA.received, batchID, 5*time.Second, "worker A")
+
+	stopA()
+	waitForWorkerCount(t, state, 0, 5*time.Second)
+
+	workerB, _ := startMockWorkerAtAddr(t, "worker-b", addr)
+	waitForWorkerCount(t, state, 1, 5*time.Second)
+	waitForRouteWorker(t, state, batchID, "worker-1", 5*time.Second)
+
+	sendHashBatch(t, stream, batchID)
+	waitForBatchReceived(t, workerB.received, batchID, 5*time.Second, "worker B")
 }
