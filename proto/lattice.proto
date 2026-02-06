@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package lattice.v1;
+
+option go_package = "github.com/VishwaJaya01/lattice/proto/latticev1;latticev1";
+
+// LatticeAudit is the bidirectional streaming interface used by FlashAudit
+// clients and workers. The preferred production payload is FlatBuffers
+// (see proto/lattice.fbs), but structured protobuf messages are kept for
+// debugging and early integration.
+service LatticeAudit {
+  rpc AuditStream(stream AuditRequest) returns (stream AuditResponse);
+}
+
+message AuditRequest {
+  string traceparent = 16;
+  string baggage = 17;
+  oneof payload {
+    HashBatch hash_batch = 1;
+    ControlMessage control = 2;
+    // FlatBuffers-encoded lattice.fb.AuditRequest (preferred for production).
+    bytes flatbuf = 15;
+  }
+}
+
+message AuditResponse {
+  string traceparent = 16;
+  string baggage = 17;
+  oneof payload {
+    CrackedHash cracked_hash = 1;
+    Status status = 2;
+    Error error = 3;
+    // FlatBuffers-encoded lattice.fb.AuditResponse (preferred for production).
+    bytes flatbuf = 15;
+  }
+}
+
+message HashBatch {
+  // Each entry must be exactly 16 bytes (raw NTLM hash).
+  repeated bytes raw_hashes = 1;
+  string batch_id = 2;
+  uint64 sent_unix_ms = 3;
+}
+
+enum ControlKind {
+  CONTROL_KIND_UNSPECIFIED = 0;
+  START = 1;
+  PAUSE = 2;
+  RESUME = 3;
+  CANCEL = 4;
+}
+
+message ControlMessage {
+  ControlKind kind = 1;
+  string reason = 2;
+  map<string, string> metadata = 3;
+  string batch_id = 4;
+}
+
+message CrackedHash {
+  // Raw 16-byte NTLM hash that was cracked.
+  bytes original_hash = 1;
+  string username = 2;
+  string plaintext = 3;
+  uint64 chain_info = 4;
+  string batch_id = 5;
+}
+
+message Status {
+  string node_id = 1;
+  string status = 2;
+  double rate_hashes_per_sec = 3;
+  uint64 processed = 4;
+  uint64 cracked = 5;
+  uint64 in_flight = 6;
+  uint64 timestamp_unix_ms = 7;
+}
+
+message Error {
+  int32 code = 1;
+  string message = 2;
+  string details = 3;
+  string batch_id = 4;
+}

@@ -1,0 +1,18 @@
+[package]
+name = "rainbowkv"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+byteorder = "1"
+memmap2 = "0.9"
+thiserror = "1"
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3"
+
+[[bench]]
+name = "lookup"
+harness = false

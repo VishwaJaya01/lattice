@@ -1,0 +1,14 @@
+[workspace]
+members = [
+  "cmd/flashaudit",
+  "crates/lattice-input",
+  "crates/rainbowkv",
+  "crates/worker",
+  "crates/lattice-proto",
+  "crates/lattice-flatbuf",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.93"

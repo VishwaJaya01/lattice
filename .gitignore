@@ -1,0 +1,56 @@
+# Build outputs
+/target/
+**/target/
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+*.coverprofile
+coverage/
+*.profraw
+*.profdata
+
+# Go local caches
+.gopath/
+.gocache/
+
+# Fuzzing artifacts
+fuzz/artifacts/
+fuzz/corpus/
+fuzz/coverage/
+fuzz/target/
+
+# TLA+ local artifacts
+tla2tools.jar
+states/
+*.st
+MC.out*
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.swo
+*.bak
+*.orig
+
+# Local env and certificates
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Editors and OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini

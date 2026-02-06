@@ -1,0 +1,27 @@
+[package]
+name = "lattice-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lattice-flatbuf = { path = "../crates/lattice-flatbuf" }
+lattice-input = { path = "../crates/lattice-input" }
+
+[[bin]]
+name = "hash_parser"
+path = "fuzz_targets/hash_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "flatbuf_payloads"
+path = "fuzz_targets/flatbuf_payloads.rs"
+test = false
+doc = false
+
+[workspace]

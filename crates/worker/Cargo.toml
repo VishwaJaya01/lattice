@@ -1,0 +1,23 @@
+[package]
+name = "lattice-worker"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+lattice-flatbuf = { path = "../lattice-flatbuf" }
+lattice-proto = { path = "../lattice-proto" }
+hyper = { version = "0.14", features = ["server", "http1", "tcp"] }
+opentelemetry = "0.23"
+opentelemetry-otlp = { version = "0.16", features = ["grpc-tonic"] }
+opentelemetry_sdk = { version = "0.23", features = ["rt-tokio"] }
+prometheus = "0.13"
+rainbowkv = { path = "../rainbowkv" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net"] }
+tokio-stream = "0.1"
+tonic = { version = "0.12", features = ["tls"] }
+tracing = "0.1"
+tracing-opentelemetry = "0.24"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
