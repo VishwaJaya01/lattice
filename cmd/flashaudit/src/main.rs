@@ -15,8 +15,9 @@ use opentelemetry::propagation::Injector;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::{Resource, trace as sdktrace};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
-use tokio::sync::mpsc;
+use tokio::fs::OpenOptions;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tracing::{info, warn};
@@ -24,7 +25,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod ui;
-use ui::AppEvent;
+use ui::{AppEvent, UiCommand};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -76,12 +77,23 @@ struct Args {
     /// Disable TUI (log-only mode)
     #[arg(long = "no-tui", action = ArgAction::SetFalse, default_value_t = true)]
     tui: bool,
+
+    /// Append cracked results to file (`username:plaintext` per line)
+    #[arg(long)]
+    out: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum PayloadEncoding {
     Flatbuf,
     Proto,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StreamControl {
+    Running,
+    Paused,
+    Cancelled,
 }
 
 #[tokio::main]
@@ -101,6 +113,12 @@ async fn main() -> Result<()> {
 
     let mut inbound = response.into_inner();
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<AppEvent>();
+    let (_stream_ctrl_tx, stream_ctrl_rx) = watch::channel(StreamControl::Running);
+
+    let mut crack_out = match &args.out {
+        Some(path) => Some(open_output_append(path).await?),
+        None => None,
+    };
 
     let response_ui = ui_tx.clone();
     let response_task = tokio::spawn(async move {
@@ -116,6 +134,15 @@ async fn main() -> Result<()> {
                     });
                 }
                 Some(ResponsePayload::CrackedHash(cracked)) => {
+                    if let Err(err) =
+                        append_crack_output(&mut crack_out, &cracked.username, &cracked.plaintext)
+                            .await
+                    {
+                        let _ = response_ui.send(AppEvent::Error {
+                            code: 500,
+                            message: format!("write output failed: {err}"),
+                        });
+                    }
                     let _ = response_ui.send(AppEvent::Cracked {
                         username: cracked.username,
                         plaintext: cracked.plaintext,
@@ -131,9 +158,19 @@ async fn main() -> Result<()> {
                     Ok(resp) => match resp.payload_type() {
                         fbs::ResponsePayload::CrackedHash => {
                             if let Some(cracked) = resp.payload_as_cracked_hash() {
+                                let username = cracked.username().unwrap_or("").to_string();
+                                let plaintext = cracked.plaintext().unwrap_or("").to_string();
+                                if let Err(err) =
+                                    append_crack_output(&mut crack_out, &username, &plaintext).await
+                                {
+                                    let _ = response_ui.send(AppEvent::Error {
+                                        code: 500,
+                                        message: format!("write output failed: {err}"),
+                                    });
+                                }
                                 let _ = response_ui.send(AppEvent::Cracked {
-                                    username: cracked.username().unwrap_or("").to_string(),
-                                    plaintext: cracked.plaintext().unwrap_or("").to_string(),
+                                    username,
+                                    plaintext,
                                 });
                             }
                         }
@@ -170,13 +207,70 @@ async fn main() -> Result<()> {
         }
     });
 
-    send_control(&tx, args.payload).await?;
+    send_control_kind(&tx, args.payload, ControlKind::Start, "client_start").await?;
+
+    let (ui_cmd_tx, mut ui_cmd_rx) = mpsc::unbounded_channel::<UiCommand>();
+    let command_tx = tx.clone();
+    let command_ui = ui_tx.clone();
+    let command_payload = args.payload;
+    let command_ctrl = _stream_ctrl_tx.clone();
+    let command_task = tokio::spawn(async move {
+        while let Some(cmd) = ui_cmd_rx.recv().await {
+            match cmd {
+                UiCommand::SetPaused(paused) => {
+                    let _ = command_ctrl.send(if paused {
+                        StreamControl::Paused
+                    } else {
+                        StreamControl::Running
+                    });
+                    let kind = if paused {
+                        ControlKind::Pause
+                    } else {
+                        ControlKind::Resume
+                    };
+                    if let Err(err) = send_control_kind(
+                        &command_tx,
+                        command_payload,
+                        kind,
+                        if paused {
+                            "client_pause"
+                        } else {
+                            "client_resume"
+                        },
+                    )
+                    .await
+                    {
+                        warn!(error = %err, "failed to send pause/resume control");
+                    }
+                }
+                UiCommand::CancelStream => {
+                    let _ = command_ctrl.send(StreamControl::Cancelled);
+                    if let Err(err) = send_control_kind(
+                        &command_tx,
+                        command_payload,
+                        ControlKind::Cancel,
+                        "client_cancel",
+                    )
+                    .await
+                    {
+                        warn!(error = %err, "failed to send cancel control");
+                    }
+                    let _ = command_ui.send(AppEvent::Error {
+                        code: 0,
+                        message: "cancel requested".to_string(),
+                    });
+                    break;
+                }
+            }
+        }
+    });
 
     let input_tx = tx.clone();
     let input_ui = ui_tx.clone();
     let input_path = args.input.clone();
     let batch_size = args.batch_size;
     let payload = args.payload;
+    let mut input_ctrl = stream_ctrl_rx.clone();
 
     let input_task = tokio::spawn(async move {
         let mut reader = open_input(input_path).await?;
@@ -184,10 +278,38 @@ async fn main() -> Result<()> {
         let mut batch = Vec::with_capacity(batch_size);
         let mut batch_index: u64 = 0;
         let mut total: u64 = 0;
+        let mut cancelled = false;
 
         loop {
+            let control_state = {
+                let state_ref = input_ctrl.borrow();
+                *state_ref
+            };
+
+            match control_state {
+                StreamControl::Cancelled => {
+                    cancelled = true;
+                    break;
+                }
+                StreamControl::Paused => {
+                    if input_ctrl.changed().await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                StreamControl::Running => {}
+            }
+
             line.clear();
-            let read = reader.read_line(&mut line).await?;
+            let read = tokio::select! {
+                changed = input_ctrl.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                read = reader.read_line(&mut line) => read?,
+            };
             if read == 0 {
                 break;
             }
@@ -207,7 +329,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        if !batch.is_empty() {
+        if !cancelled && !batch.is_empty() {
             let batch_id = format!("batch-{batch_index}");
             send_batch(&input_tx, &batch_id, &batch, payload).await?;
             total += batch.len() as u64;
@@ -217,22 +339,46 @@ async fn main() -> Result<()> {
         }
 
         let _ = input_ui.send(AppEvent::InputDone);
-        info!(total_hashes = total, "input drained");
+        if cancelled {
+            info!(total_hashes = total, "input cancelled");
+        } else {
+            info!(total_hashes = total, "input drained");
+        }
         Ok::<(), anyhow::Error>(())
     });
 
     drop(tx);
     drop(ui_tx);
 
+    let mut input_task = input_task;
+    let response_task = response_task;
+    let command_task = command_task;
+
     if args.tui {
-        let ui_outcome = ui::run(ui_rx).await?;
-        if ui_outcome.quit {
+        let ui_outcome = ui::run(ui_rx, ui_cmd_tx, args.out.clone()).await?;
+        let mut input_joined = false;
+        if ui_outcome.cancelled {
+            if let Ok(result) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), &mut input_task).await
+            {
+                let _ = result;
+                input_joined = true;
+            }
+            // Give the response stream a short window to flush status/error updates.
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            response_task.abort();
+        } else if ui_outcome.quit {
             input_task.abort();
             response_task.abort();
         }
-        let _ = input_task.await;
+        let _ = command_task.await;
+        if !input_joined {
+            let _ = input_task.await;
+        }
         let _ = response_task.await;
     } else {
+        drop(ui_cmd_tx);
+        let _ = command_task.await;
         let _ = input_task.await;
         // Give the response stream a short window to flush statuses/cracks in log mode.
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -311,8 +457,13 @@ async fn open_input(path: Option<PathBuf>) -> Result<Box<dyn AsyncBufRead + Unpi
     }
 }
 
-async fn send_control(tx: &mpsc::Sender<AuditRequest>, encoding: PayloadEncoding) -> Result<()> {
-    let span = tracing::info_span!("control", kind = "start");
+async fn send_control_kind(
+    tx: &mpsc::Sender<AuditRequest>,
+    encoding: PayloadEncoding,
+    kind: ControlKind,
+    reason: &str,
+) -> Result<()> {
+    let span = tracing::info_span!("control", kind = kind.as_str_name(), reason = %reason);
     let _guard = span.enter();
     let trace = TraceContext::from_span(&span);
     match encoding {
@@ -321,14 +472,14 @@ async fn send_control(tx: &mpsc::Sender<AuditRequest>, encoding: PayloadEncoding
                 traceparent: trace.traceparent.clone().unwrap_or_default(),
                 baggage: trace.baggage.clone().unwrap_or_default(),
                 payload: Some(RequestPayload::Control(ControlMessage {
-                    kind: ControlKind::Start as i32,
-                    reason: "client_start".to_string(),
+                    kind: kind as i32,
+                    reason: reason.to_string(),
                     metadata: Default::default(),
                     batch_id: "".to_string(),
                 })),
             })
             .await
-            .context("send start control")?;
+            .context("send control")?;
         }
         PayloadEncoding::Flatbuf => {
             let buf = flatbuf::build_control_request(
@@ -337,8 +488,8 @@ async fn send_control(tx: &mpsc::Sender<AuditRequest>, encoding: PayloadEncoding
                     traceparent: trace.traceparent.as_deref(),
                     baggage: trace.baggage.as_deref(),
                 },
-                fbs::ControlKind::Start,
-                Some("client_start"),
+                to_fbs_control_kind(kind),
+                Some(reason),
                 None,
             );
             tx.send(AuditRequest {
@@ -347,9 +498,54 @@ async fn send_control(tx: &mpsc::Sender<AuditRequest>, encoding: PayloadEncoding
                 payload: Some(RequestPayload::Flatbuf(buf)),
             })
             .await
-            .context("send start control (flatbuf)")?;
+            .context("send control (flatbuf)")?;
         }
     }
+    Ok(())
+}
+
+fn to_fbs_control_kind(kind: ControlKind) -> fbs::ControlKind {
+    match kind as i32 {
+        x if x == ControlKind::Start as i32 => fbs::ControlKind::Start,
+        x if x == ControlKind::Pause as i32 => fbs::ControlKind::Pause,
+        x if x == ControlKind::Resume as i32 => fbs::ControlKind::Resume,
+        x if x == ControlKind::Cancel as i32 => fbs::ControlKind::Cancel,
+        _ => fbs::ControlKind::Unspecified,
+    }
+}
+
+async fn open_output_append(path: &PathBuf) -> Result<tokio::fs::File> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("create output dir: {}", parent.display()))?;
+    }
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await
+        .with_context(|| format!("open output file: {}", path.display()))
+}
+
+async fn append_crack_output(
+    out_file: &mut Option<tokio::fs::File>,
+    username: &str,
+    plaintext: &str,
+) -> Result<()> {
+    let Some(file) = out_file.as_mut() else {
+        return Ok(());
+    };
+    let line = if username.is_empty() {
+        format!(":{plaintext}\n")
+    } else {
+        format!("{username}:{plaintext}\n")
+    };
+    file.write_all(line.as_bytes())
+        .await
+        .context("write crack output")?;
     Ok(())
 }
 

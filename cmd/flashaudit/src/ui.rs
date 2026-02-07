@@ -1,6 +1,10 @@
 use std::collections::{HashMap, VecDeque};
+use std::fs::File;
+use std::io::Write;
 use std::io::{self};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
@@ -15,6 +19,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Row, Sparkline, Table};
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -39,8 +44,15 @@ pub enum AppEvent {
     InputDone,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiCommand {
+    SetPaused(bool),
+    CancelStream,
+}
+
 pub struct UiOutcome {
     pub quit: bool,
+    pub cancelled: bool,
 }
 
 struct TerminalGuard;
@@ -92,6 +104,7 @@ struct CrackEntry {
 
 struct AppState {
     start: Instant,
+    snapshot_base: Option<PathBuf>,
     total_sent: u64,
     input_done: bool,
     nodes: HashMap<String, NodeStatus>,
@@ -100,12 +113,14 @@ struct AppState {
     rate_history: Vec<u64>,
     paused: bool,
     quit: bool,
+    cancelled: bool,
 }
 
 impl AppState {
-    fn new() -> Self {
+    fn new(snapshot_base: Option<PathBuf>) -> Self {
         Self {
             start: Instant::now(),
+            snapshot_base,
             total_sent: 0,
             input_done: false,
             nodes: HashMap::new(),
@@ -114,6 +129,7 @@ impl AppState {
             rate_history: Vec::with_capacity(120),
             paused: false,
             quit: false,
+            cancelled: false,
         }
     }
 
@@ -161,12 +177,33 @@ impl AppState {
         }
     }
 
-    fn handle_key(&mut self, key: KeyEvent) {
+    fn handle_key(&mut self, key: KeyEvent) -> Option<UiCommand> {
         match key.code {
-            KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('c') => self.recent_cracks.clear(),
-            KeyCode::Char('p') => self.paused = !self.paused,
-            _ => {}
+            KeyCode::Char('q') => {
+                self.quit = true;
+                None
+            }
+            KeyCode::Char('c') => {
+                self.recent_cracks.clear();
+                None
+            }
+            KeyCode::Char('p') => {
+                self.paused = !self.paused;
+                Some(UiCommand::SetPaused(self.paused))
+            }
+            KeyCode::Char('x') => {
+                self.cancelled = true;
+                self.quit = true;
+                Some(UiCommand::CancelStream)
+            }
+            KeyCode::Char('s') => {
+                match self.save_snapshot() {
+                    Ok(path) => self.push_note(format!("snapshot saved: {}", path.display())),
+                    Err(err) => self.push_note(format!("snapshot save failed: {err}")),
+                }
+                None
+            }
+            _ => None,
         }
     }
 
@@ -200,6 +237,58 @@ impl AppState {
             rate,
         }
     }
+
+    fn push_note(&mut self, msg: String) {
+        if self.errors.len() >= 5 {
+            self.errors.pop_back();
+        }
+        self.errors.push_front(msg);
+    }
+
+    fn save_snapshot(&self) -> Result<PathBuf> {
+        let path = snapshot_path(self.snapshot_base.as_deref());
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let mut file = File::create(&path)?;
+        let totals = self.totals();
+        writeln!(
+            file,
+            "flashaudit snapshot: sent={} processed={} cracked={} in_flight={} rate={:.1}H/s input_done={}",
+            self.total_sent,
+            totals.processed,
+            totals.cracked,
+            totals.in_flight,
+            totals.rate,
+            self.input_done
+        )?;
+        writeln!(file, "nodes:")?;
+        for (id, status) in &self.nodes {
+            writeln!(
+                file,
+                "  - {} rate={:.1} processed={} cracked={} in_flight={} last_seen={}s",
+                id,
+                status.rate,
+                status.processed,
+                status.cracked,
+                status.in_flight,
+                status.last_seen.elapsed().as_secs()
+            )?;
+        }
+        writeln!(file, "recent_cracks:")?;
+        for crack in &self.recent_cracks {
+            let line = if crack.username.is_empty() {
+                crack.plaintext.clone()
+            } else {
+                format!("{}:{}", crack.username, crack.plaintext)
+            };
+            writeln!(file, "  - {}", line)?;
+        }
+        Ok(path)
+    }
 }
 
 struct Totals {
@@ -209,7 +298,11 @@ struct Totals {
     rate: f64,
 }
 
-pub async fn run(mut rx: UnboundedReceiver<AppEvent>) -> Result<UiOutcome> {
+pub async fn run(
+    mut rx: UnboundedReceiver<AppEvent>,
+    cmd_tx: UnboundedSender<UiCommand>,
+    snapshot_base: Option<PathBuf>,
+) -> Result<UiOutcome> {
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
@@ -224,14 +317,18 @@ pub async fn run(mut rx: UnboundedReceiver<AppEvent>) -> Result<UiOutcome> {
         }
     });
 
-    let mut state = AppState::new();
+    let mut state = AppState::new(snapshot_base);
     let mut tick = tokio::time::interval(Duration::from_millis(250));
 
     loop {
         tokio::select! {
             _ = tick.tick() => state.on_tick(),
             Some(ev) = rx.recv() => state.handle_event(ev),
-            Some(key) = key_rx.recv() => state.handle_key(key),
+            Some(key) = key_rx.recv() => {
+                if let Some(cmd) = state.handle_key(key) {
+                    let _ = cmd_tx.send(cmd);
+                }
+            }
             else => break,
         }
 
@@ -242,7 +339,10 @@ pub async fn run(mut rx: UnboundedReceiver<AppEvent>) -> Result<UiOutcome> {
         }
     }
 
-    Ok(UiOutcome { quit: state.quit })
+    Ok(UiOutcome {
+        quit: state.quit,
+        cancelled: state.cancelled,
+    })
 }
 
 fn draw_ui(f: &mut ratatui::Frame<'_>, state: &AppState) {
@@ -285,7 +385,11 @@ fn header_widget(state: &AppState) -> Paragraph<'static> {
         "ETA n/a".to_string()
     };
 
-    let status = if state.input_done {
+    let status = if state.cancelled {
+        "cancelled"
+    } else if state.paused {
+        "paused"
+    } else if state.input_done {
         "input done"
     } else {
         "streaming"
@@ -442,7 +546,11 @@ fn footer_widget(state: &AppState) -> Paragraph<'static> {
         Span::styled("c", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" clear cracks  "),
         Span::styled("p", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(" pause (local)"),
+        Span::raw(" pause/resume  "),
+        Span::styled("s", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" save snapshot  "),
+        Span::styled("x", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" cancel stream"),
     ];
 
     if state.paused {
@@ -454,4 +562,23 @@ fn footer_widget(state: &AppState) -> Paragraph<'static> {
     }
 
     Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL).title("Hotkeys"))
+}
+
+fn snapshot_path(base: Option<&Path>) -> PathBuf {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    match base {
+        Some(base) => {
+            let parent = base.parent().unwrap_or_else(|| Path::new("."));
+            let stem = base
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("flashaudit");
+            let ext = base.extension().and_then(|s| s.to_str()).unwrap_or("txt");
+            parent.join(format!("{stem}.snapshot-{ts}.{ext}"))
+        }
+        None => PathBuf::from(format!("flashaudit.snapshot-{ts}.txt")),
+    }
 }
