@@ -1,0 +1,115 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: lattice-worker
+  labels:
+    app.kubernetes.io/name: lattice
+    app.kubernetes.io/component: worker
+spec:
+  serviceName: lattice-worker
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lattice
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lattice
+        app.kubernetes.io/component: worker
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: generate-demo-table
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - /scripts/generate-demo-table.py
+            - --output
+            - /var/lib/lattice/demo.lattice
+            - --chain-len
+            - "100"
+            - --chain-count
+            - "5000"
+          volumeMounts:
+            - name: generator
+              mountPath: /scripts
+              readOnly: true
+            - name: table
+              mountPath: /var/lib/lattice
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+      containers:
+        - name: worker
+          image: ghcr.io/vishwajaya01/lattice-worker:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --addr=0.0.0.0:50052
+            - --node-id=$(POD_NAME)
+            - --table=/var/lib/lattice/demo.lattice
+            - --metrics-addr=:2113
+            - --tls-cert=/certs/worker.crt
+            - --tls-key=/certs/worker.key
+            - --tls-client-ca=/certs/ca.crt
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: grpc
+              containerPort: 50052
+            - name: metrics
+              containerPort: 2113
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: mtls
+              mountPath: /certs
+              readOnly: true
+            - name: table
+              mountPath: /var/lib/lattice
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 2000m
+              memory: 1Gi
+      volumes:
+        - name: mtls
+          secret:
+            secretName: lattice-mtls
+        - name: generator
+          configMap:
+            name: lattice-demo-table-generator
+        - name: table
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

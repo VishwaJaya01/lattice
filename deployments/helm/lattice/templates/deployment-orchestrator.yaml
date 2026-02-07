@@ -1,0 +1,84 @@
+{{- $fullname := include "lattice.fullname" . -}}
+{{- $workerName := printf "%s-worker" $fullname -}}
+{{- $mtlsSecret := ternary (printf "%s-mtls" $fullname) .Values.mtls.existingSecret .Values.mtls.create -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-orchestrator
+  labels:
+    {{- include "lattice.labels" . | nindent 4 }}
+    app.kubernetes.io/component: orchestrator
+spec:
+  replicas: {{ .Values.orchestrator.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "lattice.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: orchestrator
+  template:
+    metadata:
+      labels:
+        {{- include "lattice.labels" . | nindent 8 }}
+        app.kubernetes.io/component: orchestrator
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: orchestrator
+          image: "{{ .Values.images.orchestrator.repository }}:{{ .Values.images.orchestrator.tag }}"
+          imagePullPolicy: {{ .Values.images.orchestrator.pullPolicy }}
+          args:
+            - --addr=:{{ .Values.orchestrator.grpcPort }}
+            - --metrics-addr=:{{ .Values.orchestrator.metricsPort }}
+            - --node-id={{ .Values.orchestrator.nodeId }}
+            - --tls-cert=/certs/orchestrator.crt
+            - --tls-key=/certs/orchestrator.key
+            - --tls-client-ca=/certs/ca.crt
+            - --worker-ca=/certs/ca.crt
+            - --worker-server-name=lattice-worker
+            - --worker-heartbeat={{ .Values.orchestrator.workerHeartbeat }}
+            - --worker-timeout={{ .Values.orchestrator.workerTimeout }}
+            - --hash-replicas={{ .Values.orchestrator.hashReplicas }}
+            {{- if .Values.orchestrator.otelEndpoint }}
+            - --otel-endpoint={{ .Values.orchestrator.otelEndpoint }}
+            {{- end }}
+            {{- if .Values.orchestrator.otelInsecure }}
+            - --otel-insecure
+            {{- end }}
+            {{- range $i, $_ := until (int .Values.worker.replicaCount) }}
+            - --worker={{ $workerName }}-{{ $i }}.{{ $workerName }}.{{ $.Release.Namespace }}.svc.cluster.local:{{ $.Values.worker.grpcPort }}
+            {{- end }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.orchestrator.grpcPort }}
+            - name: metrics
+              containerPort: {{ .Values.orchestrator.metricsPort }}
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          volumeMounts:
+            - name: mtls
+              mountPath: /certs
+              readOnly: true
+          resources:
+{{ toYaml .Values.orchestrator.resources | indent 12 }}
+      volumes:
+        - name: mtls
+          secret:
+            secretName: {{ $mtlsSecret }}

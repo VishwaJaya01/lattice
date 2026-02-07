@@ -1,0 +1,90 @@
+namespace lattice.fb;
+
+// Fixed-size 16-byte NTLM hash, stored as two little-endian u64 lanes.
+struct Hash16 {
+  lo:ulong;
+  hi:ulong;
+}
+
+table HashBatch {
+  batch_id:string;
+  hashes:[Hash16];
+  sent_unix_ms:ulong;
+}
+
+enum ControlKind:byte {
+  Unspecified = 0,
+  Start = 1,
+  Pause = 2,
+  Resume = 3,
+  Cancel = 4
+}
+
+table KeyValue {
+  key:string;
+  value:string;
+}
+
+table ControlMessage {
+  kind:ControlKind;
+  reason:string;
+  metadata:[KeyValue];
+  batch_id:string;
+}
+
+table CrackedHash {
+  original_hash:Hash16;
+  username:string;
+  plaintext:string;
+  chain_info:ulong;
+  batch_id:string;
+}
+
+table CrackedBatch {
+  batch_id:string;
+  cracks:[CrackedHash];
+}
+
+enum StatusKind:byte {
+  Unknown = 0,
+  Ok = 1,
+  Degraded = 2,
+  Error = 3
+}
+
+table Status {
+  node_id:string;
+  status:StatusKind;
+  rate_hashes_per_sec:double;
+  processed:ulong;
+  cracked:ulong;
+  in_flight:ulong;
+  timestamp_unix_ms:ulong;
+}
+
+table Error {
+  code:int;
+  message:string;
+  details:string;
+  batch_id:string;
+}
+
+union RequestPayload { HashBatch, ControlMessage }
+union ResponsePayload { CrackedHash, CrackedBatch, Status, Error }
+
+table AuditRequest {
+  stream_id:string;
+  traceparent:string;
+  baggage:string;
+  payload:RequestPayload;
+}
+
+table AuditResponse {
+  stream_id:string;
+  traceparent:string;
+  baggage:string;
+  payload:ResponsePayload;
+}
+
+root_type AuditRequest;
+root_type AuditResponse;

@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lattice-orchestrator
+  labels:
+    app.kubernetes.io/name: lattice
+    app.kubernetes.io/component: orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lattice
+      app.kubernetes.io/component: orchestrator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lattice
+        app.kubernetes.io/component: orchestrator
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: orchestrator
+          image: ghcr.io/vishwajaya01/lattice-orchestrator:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --addr=:50051
+            - --metrics-addr=:2112
+            - --node-id=orchestrator-1
+            - --tls-cert=/certs/orchestrator.crt
+            - --tls-key=/certs/orchestrator.key
+            - --tls-client-ca=/certs/ca.crt
+            - --worker-ca=/certs/ca.crt
+            - --worker-server-name=lattice-worker
+            - --worker-heartbeat=2s
+            - --worker-timeout=6s
+            - --hash-replicas=128
+            - --worker=lattice-worker-0.lattice-worker.lattice.svc.cluster.local:50052
+            - --worker=lattice-worker-1.lattice-worker.lattice.svc.cluster.local:50052
+          ports:
+            - name: grpc
+              containerPort: 50051
+            - name: metrics
+              containerPort: 2112
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: mtls
+              mountPath: /certs
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+      volumes:
+        - name: mtls
+          secret:
+            secretName: lattice-mtls

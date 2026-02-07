@@ -1,0 +1,21 @@
+Lattice has been installed.
+
+Verify pods:
+  kubectl -n {{ .Release.Namespace }} get pods,svc
+
+Orchestrator service:
+  {{ include "lattice.fullname" . }}-orchestrator:{{ .Values.orchestrator.grpcPort }}
+
+Worker headless service:
+  {{ include "lattice.fullname" . }}-worker
+
+mTLS secret in use:
+{{- if .Values.mtls.create }}
+  {{ include "lattice.fullname" . }}-mtls
+{{- else }}
+  {{ .Values.mtls.existingSecret }}
+{{- end }}
+
+Failover sanity check:
+  kubectl -n {{ .Release.Namespace }} delete pod {{ include "lattice.fullname" . }}-worker-0
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "lattice.fullname" . }}-orchestrator --since=2m

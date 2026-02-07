@@ -1,0 +1,24 @@
+[package]
+name = "flashaudit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.27"
+lattice-flatbuf = { path = "../../crates/lattice-flatbuf" }
+lattice-input = { path = "../../crates/lattice-input" }
+lattice-proto = { path = "../../crates/lattice-proto" }
+opentelemetry = "0.23"
+opentelemetry-otlp = { version = "0.16", features = ["grpc-tonic"] }
+opentelemetry_sdk = { version = "0.23", features = ["rt-tokio"] }
+ratatui = "0.26"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util"] }
+tokio-stream = "0.1"
+tonic = { version = "0.12", features = ["tls"] }
+tracing = "0.1"
+tracing-opentelemetry = "0.24"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

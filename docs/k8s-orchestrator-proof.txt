@@ -1,0 +1,9 @@
+2026/02/07 03:51:40 ERROR worker recv failed worker=worker-1 err="rpc error: code = Unavailable desc = error reading from server: EOF"
+2026/02/07 03:51:40 WARN worker removed worker=worker-1 addr=lattice-lattice-worker-0.lattice-lattice-worker.lattice.svc.cluster.local:50052
+2026/02/07 03:51:51 ERROR worker dial failed worker=worker-1 addr=lattice-lattice-worker-0.lattice-lattice-worker.lattice.svc.cluster.local:50052 err="context deadline exceeded"
+2026/02/07 03:52:02 ERROR worker dial failed worker=worker-1 addr=lattice-lattice-worker-0.lattice-lattice-worker.lattice.svc.cluster.local:50052 err="context deadline exceeded"
+2026/02/07 03:52:07 INFO worker registered worker=worker-1 addr=lattice-lattice-worker-0.lattice-lattice-worker.lattice.svc.cluster.local:50052
+2026/02/07 03:56:45 ERROR worker recv failed worker=worker-1 err="rpc error: code = Unavailable desc = error reading from server: EOF"
+2026/02/07 03:56:45 WARN worker removed worker=worker-1 addr=lattice-lattice-worker-0.lattice-lattice-worker.lattice.svc.cluster.local:50052
+2026/02/07 03:56:56 ERROR worker dial failed worker=worker-1 addr=lattice-lattice-worker-0.lattice-lattice-worker.lattice.svc.cluster.local:50052 err="context deadline exceeded"
+2026/02/07 03:57:06 ERROR worker dial failed worker=worker-1 addr=lattice-lattice-worker-0.lattice-lattice-worker.lattice.svc.cluster.local:50052 err="context deadline exceeded"

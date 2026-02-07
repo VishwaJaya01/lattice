@@ -1,0 +1,4 @@
+NAME                                           READY   STATUS    RESTARTS   AGE   IP          NODE             NOMINATED NODE   READINESS GATES
+lattice-lattice-orchestrator-6484d549b-6l4vb   1/1     Running   0          8h    10.1.0.16   docker-desktop   <none>           <none>
+lattice-lattice-worker-0                       1/1     Running   0          23s   10.1.0.19   docker-desktop   <none>           <none>
+lattice-lattice-worker-1                       1/1     Running   0          8h    10.1.0.6    docker-desktop   <none>           <none>

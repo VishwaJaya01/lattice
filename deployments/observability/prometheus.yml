@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: lattice_orchestrator
+    static_configs:
+      - targets:
+          - host.docker.internal:2112
+
+  - job_name: lattice_workers
+    static_configs:
+      - targets:
+          - host.docker.internal:2113
+          - host.docker.internal:2114

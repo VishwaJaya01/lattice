@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: lattice
+resources:
+  - namespace.yaml
+  - service-orchestrator.yaml
+  - service-worker-headless.yaml
+  - deployment-orchestrator.yaml
+  - statefulset-worker.yaml
+
+configMapGenerator:
+  - name: lattice-demo-table-generator
+    files:
+      - generate-demo-table.py
+
+generatorOptions:
+  disableNameSuffixHash: true
