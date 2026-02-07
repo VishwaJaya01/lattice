@@ -61,6 +61,9 @@ jobs:
       - name: Install smoke dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler openssl python3
 
+      - name: Ensure smoke script is executable
+        run: chmod +x ./scripts/smoke-e2e.sh
+
       - name: Run smoke e2e
         run: ./scripts/smoke-e2e.sh
 
