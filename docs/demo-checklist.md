@@ -67,6 +67,10 @@ Windows PowerShell (Git Bash):
 Expected tail:
 
 - `smoke test completed successfully`
+- FlashAudit controls verify in TUI:
+  - `p` pauses/resumes send path
+  - `x` cancels stream gracefully
+  - `s` writes a snapshot file
 
 ## 5) Chaos failover
 

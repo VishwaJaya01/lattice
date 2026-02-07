@@ -61,6 +61,16 @@ Windows PowerShell (Git Bash):
 & "C:\Program Files\Git\bin\bash.exe" -lc "cd /d/Projects/lattice && ./scripts/smoke-e2e.sh"
 ```
 
+FlashAudit operator controls:
+
+- `--out <path>` append cracked lines as `username:plaintext`
+- hotkeys in TUI:
+  - `p` pause/resume outbound batch streaming
+  - `x` cancel stream (sends cancel control)
+  - `s` save a session snapshot (`*.snapshot-<unix>.txt`)
+  - `c` clear recent cracks
+  - `q` quit UI
+
 ### 2) Chaos Demo (Worker Failure + Continue)
 
 Runs:
