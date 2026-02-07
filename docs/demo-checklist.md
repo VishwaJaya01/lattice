@@ -146,3 +146,25 @@ Expected:
 
 - both renders succeed
 - mTLS secret assumptions match `deployments/k8s/README.md`
+
+## 10) Kubernetes failover proof capture
+
+Linux/macOS:
+
+```bash
+./scripts/k8s-failover-proof.sh
+```
+
+Windows PowerShell (Git Bash):
+
+```powershell
+& "C:\Program Files\Git\bin\bash.exe" -lc "cd /d/Projects/lattice && ./scripts/k8s-failover-proof.sh"
+```
+
+Expected:
+
+- script exits successfully
+- `docs/k8s-pods-proof.txt` is updated
+- `docs/k8s-orchestrator-proof.txt` includes:
+  - `worker removed worker=worker-1`
+  - `worker registered worker=worker-1`

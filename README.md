@@ -151,6 +151,12 @@ helm upgrade --install lattice deployments/helm/lattice -n lattice --create-name
 
 Both expect an mTLS secret (`lattice-mtls`) unless Helm-managed cert material is enabled in values.
 
+Kubernetes failover proof capture:
+
+```bash
+./scripts/k8s-failover-proof.sh
+```
+
 ## Trace Validation
 
 Run the trace and failover integration checks:
@@ -190,6 +196,7 @@ Reference:
 - Stretch goal implemented: TLA+ sharding/recovery model (`tla/LatticeShardRecovery.tla`)
 - End-to-end validation checklist: `docs/demo-checklist.md`
 - Kubernetes packaging available (raw manifests + Helm chart)
+- Kubernetes failover proof automation available (`scripts/k8s-failover-proof.sh`)
 - Trace propagation integration test implemented (`TestAuditStreamPropagatesTraceContext`)
 - RainbowKV performance baseline captured (`docs/performance-baseline.md`)
 
