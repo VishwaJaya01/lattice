@@ -210,6 +210,11 @@ Reference:
 - Trace propagation integration test implemented (`TestAuditStreamPropagatesTraceContext`)
 - RainbowKV performance baseline captured (`docs/performance-baseline.md`)
 
+## Release Notes
+
+- `v0.2.0`: FlashAudit stream controls (`p`/`x`), session snapshots (`s`), `--out` append mode, and validated smoke/chaos/test gates.
+  - `docs/releases/v0.2.0.md`
+
 ## Fuzzing (1M Runs)
 
 Linux/macOS:

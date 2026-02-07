@@ -172,3 +172,16 @@ Expected:
 - `docs/k8s-orchestrator-proof.txt` includes:
   - `worker removed worker=worker-1`
   - `worker registered worker=worker-1`
+
+## 11) Release note artifact (recommended)
+
+Confirm milestone notes are tracked:
+
+```bash
+cat docs/releases/v0.2.0.md
+```
+
+Expected:
+
+- highlights mention FlashAudit controls (`p`, `x`, `s`) and `--out`
+- validation gates list smoke, chaos, Rust tests, and orchestrator Go tests
